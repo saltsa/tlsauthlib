@@ -30,6 +30,8 @@ jobs:
       run: go test -v ./...
 
     - name: Test system
+      env:
+        PORT: "9999"
       run: |
         ./server &
         ./client
