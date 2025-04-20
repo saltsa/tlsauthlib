@@ -33,6 +33,9 @@ func WaitForSignal(srvs ...*http.Server) {
 	log.Printf("shutdown complete")
 }
 
+func KillMySelf() {
+	syscall.Kill(os.Getpid(), syscall.SIGINT)
+}
 func LogInit() {
 	// fd, err := os.OpenFile("/tmp/tlsauth.log", os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
 	// if err != nil {

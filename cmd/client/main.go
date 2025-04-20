@@ -4,6 +4,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/saltsa/tlsauthlib"
@@ -11,6 +12,8 @@ import (
 )
 
 var httpClient *http.Client
+
+const maxErrorCount = 3
 
 func main() {
 	util.LogInit()
@@ -26,6 +29,7 @@ func main() {
 	}
 
 	go func() {
+		permErrorCount := 0
 		if err := doFetch(cfg.Port); err == nil {
 			log.Printf("Requests were success!")
 		}
@@ -33,6 +37,16 @@ func main() {
 		for range time.Tick(3 * time.Second) {
 			if err := doFetch(cfg.Port); err == nil {
 				log.Printf("Requests were success!")
+			} else {
+				uerr, ok := err.(*url.Error)
+				if ok {
+					if !uerr.Temporary() {
+						permErrorCount++
+					}
+				}
+			}
+			if permErrorCount > maxErrorCount {
+				util.KillMySelf()
 			}
 		}
 	}()
