@@ -22,7 +22,16 @@ jobs:
         go-version: '1.24'
 
     - name: Build
-      run: go build -trimpath -o server -v ./cmd/server/...
+      run: |
+        go build -trimpath -o server -v ./cmd/server/...
+        go build -trimpath -o client -v ./cmd/client/...
 
     - name: Test
       run: go test -v ./...
+
+    - name: Test system
+      env:
+        PORT: "9999"
+      run: |
+        ./server &
+        ./client

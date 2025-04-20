@@ -50,9 +50,7 @@ func (c *Config) readFromFile() {
 	}
 
 	cert := c.vi.GetString(certificate)
-
 	privateKey := c.vi.GetString(privateKey)
-
 	if len(cert) > 0 && len(privateKey) > 0 {
 		tlsCert, err := tls.X509KeyPair([]byte(cert), []byte(privateKey))
 		if err != nil {
@@ -78,12 +76,11 @@ func InitConfig() *Config {
 	newConfig := &Config{
 		vi: vi,
 	}
+	vi.SetDefault("port", "8443")
 
 	newConfig.setDynamicConfigPath()
 	newConfig.readFromFile()
 	newConfig.populateConfig()
-
-	vi.SetDefault("port", "8443")
 
 	if !newConfig.HasCertificate() {
 		certs.CertInit()

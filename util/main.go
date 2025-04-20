@@ -22,7 +22,7 @@ func WaitForSignal(srvs ...*http.Server) {
 
 	if len(srvs) > 0 {
 		srv := srvs[0]
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 
 		err := srv.Shutdown(ctx)
@@ -33,11 +33,23 @@ func WaitForSignal(srvs ...*http.Server) {
 	log.Printf("shutdown complete")
 }
 
+func KillMySelf() {
+	syscall.Kill(os.Getpid(), syscall.SIGINT)
+}
 func LogInit() {
-	h := newMultilogHandler(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-		Level:     slog.LevelDebug,
-		AddSource: true,
-	}))
+	// fd, err := os.OpenFile("/tmp/tlsauth.log", os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
+	// if err != nil {
+	// 	log.Fatalf("log file open failure: %s", err)
+	// }
+	h := newMultilogHandler(
+		slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+			Level:     slog.LevelDebug,
+			AddSource: true,
+		}),
+	// slog.NewJSONHandler(fd, &slog.HandlerOptions{
+	// 	Level: slog.LevelDebug,
+	// }),
+	)
 	l := slog.New(h)
 
 	slog.SetLogLoggerLevel(slog.LevelDebug)
