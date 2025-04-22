@@ -5,11 +5,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-<<<<<<< HEAD
-	"os"
-	"syscall"
-=======
->>>>>>> 65c5f99 (fix)
 	"time"
 
 	"github.com/saltsa/tlsauthlib"
