@@ -59,17 +59,20 @@ func doFetch(port string) error {
 	paths := []string{"/", "/testing", "/quit"}
 
 	for _, path := range paths {
-		resp, err := httpClient.Get("https://localhost:" + port + path)
+		u := "https://localhost:" + port + path
+		log.Printf("fetching %s", u)
+		resp, err := httpClient.Get(u)
 		if err != nil {
-			log.Printf("fetch failure: %s", err)
+			log.Printf("fetch %s failure: %s", u, err)
 			return err
 		}
 		defer resp.Body.Close()
+		log.Printf("http status code: %d", resp.StatusCode)
 
 		body, err := io.ReadAll(resp.Body)
-
-		if resp.StatusCode != http.StatusOK {
-			log.Printf("status: %d", resp.StatusCode)
+		if err != nil {
+			log.Printf("failure to read body: %s", err)
+			return err
 		}
 
 		log.Printf("body: %s", body)

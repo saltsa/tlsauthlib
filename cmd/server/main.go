@@ -5,8 +5,11 @@ import (
 	"log"
 	"net"
 	"net/http"
+<<<<<<< HEAD
 	"os"
 	"syscall"
+=======
+>>>>>>> 65c5f99 (fix)
 	"time"
 
 	"github.com/saltsa/tlsauthlib"
@@ -25,7 +28,7 @@ func main() {
 	// configure server properly
 	srv := &http.Server{
 		ReadTimeout: 3 * time.Second,
-		Addr:        "localhost:" + cfg.Port,
+		Addr:        ":" + cfg.Port,
 		TLSConfig:   tlsauthlib.GetServerTLSConfig(cfg),
 		ConnContext: tlsauthlib.ConnStateContext,
 	}
@@ -56,10 +59,9 @@ func main() {
 // example handler outputting client certificate serial
 func httpHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("hello world\n"))
+	fmt.Fprintf(w, "hello world, it's %s\n", time.Now().Format(time.TimeOnly))
 	serial := r.Context().Value(tlsauthlib.SerialContextKey).(string)
 	fmt.Fprintf(w, "tls cert serial was: %s\n", serial)
-	// log.Printf("tls cert serial was: %s\n", serial)
 }
 
 func httpQuitHandler(w http.ResponseWriter, r *http.Request) {
@@ -67,7 +69,7 @@ func httpQuitHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("thank you for playing\n"))
 	go func() {
-		syscall.Kill(os.Getpid(), syscall.SIGINT)
+		util.KillMySelf()
 	}()
 
 	for i := 10; i > 0; i-- {

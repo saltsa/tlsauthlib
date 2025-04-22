@@ -1,5 +1,5 @@
-tmp/
-server
-client
+./tmp
+./server
+./client
 .env
 .env.local

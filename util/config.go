@@ -113,10 +113,12 @@ func (c *Config) populateConfig() error {
 func (c *Config) ConfigAddCert(cert string) {
 	c.Lock()
 	defer c.Unlock()
-	slog.Debug("adding new cert to config...", "allowedCertCount", len(c.AllowedCerts))
+
 	if len(c.AllowedCerts) > 0 {
 		return
 	}
+
+	slog.Info("adding new cert to config because no certs configured", "allowedCertCount", len(c.AllowedCerts))
 
 	c.AllowedCerts = append(c.AllowedCerts, cert)
 	c.changesPending = true
@@ -129,6 +131,7 @@ func (c *Config) GetAllowedCerts() []string {
 	defer c.Unlock()
 	return c.AllowedCerts
 }
+
 func (c *Config) Commit() error {
 	c.Lock()
 	defer c.Unlock()

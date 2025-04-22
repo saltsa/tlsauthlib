@@ -6,7 +6,6 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
-	"log"
 	"log/slog"
 	"net"
 	"slices"
@@ -24,6 +23,8 @@ func (k *contextKey) String() string { return "tlsauthlib context value " + k.na
 
 var SerialContextKey = &contextKey{"tls-client-serial"}
 
+const tlsHandshakeTimeout = 5 * time.Second
+
 func GetServerTLSConfig(cfg *util.Config) *tls.Config {
 	tlsConfig := &tls.Config{
 		GetCertificate: cfg.GetServerCertificate,
@@ -36,24 +37,20 @@ func GetServerTLSConfig(cfg *util.Config) *tls.Config {
 				return errors.New("no peer certificate available")
 			}
 
-			log.Printf("got %d peer certificates, %d verified chains and %d SCTs", len(cs.PeerCertificates), len(cs.VerifiedChains), len(cs.SignedCertificateTimestamps))
 			xCert := cs.PeerCertificates[0]
 			receivedCertHash := certs.CertHash(xCert)
 
-			valid := slices.Contains(allowedCerts, receivedCertHash)
+			// If this is the first certificate we see, add it to config
+			if len(allowedCerts) == 0 {
+				cfg.ConfigAddCert(receivedCertHash)
+			}
 
+			valid := slices.Contains(allowedCerts, receivedCertHash)
 			if !valid {
 				slog.Debug("cert not allowed", "allowedCertCount", len(allowedCerts))
-				if len(allowedCerts) == 0 {
-					cfg.ConfigAddCert(receivedCertHash)
-				}
 				return fmt.Errorf("cert '%s' not found from allowed certs", receivedCertHash)
 			}
 			return validateClientCertificate(xCert)
-		},
-		VerifyPeerCertificate: func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
-			log.Printf("call to verify peer certificate, verifiedChains len %d", len(verifiedChains))
-			return nil
 		},
 	}
 
@@ -71,21 +68,31 @@ func GetClientTLSConfig(cfg *util.Config) *tls.Config {
 func ConnStateContext(ctx context.Context, c net.Conn) context.Context {
 	nc, ok := c.(*tls.Conn)
 	if !ok {
+		slog.Error("connection is not tls connection")
+		c.Close()
 		return ctx
 	}
 
-	err := nc.Handshake()
+	handCtx, cancel := context.WithTimeout(ctx, tlsHandshakeTimeout)
+	defer cancel()
+
+	err := nc.HandshakeContext(handCtx)
 	if err != nil {
+		slog.Error("tls hanshake failure, closing connection", "error", err)
+		nc.Close()
 		return ctx
 	}
 
 	tlsCS := nc.ConnectionState()
 	if len(tlsCS.PeerCertificates) == 0 {
+		slog.Error("no peer certificates, closing connection")
+		nc.Close()
 		return ctx
 	}
-	cert := tlsCS.PeerCertificates[0]
 
+	cert := tlsCS.PeerCertificates[0]
 	newCtx := context.WithValue(ctx, SerialContextKey, cert.SerialNumber.String())
+
 	return newCtx
 }
 
@@ -113,6 +120,10 @@ func validateClientCertificate(c *x509.Certificate) error {
 	}
 
 	if !slices.Contains(c.ExtKeyUsage, x509.ExtKeyUsageClientAuth) {
+		// cert usage might be null for some certs, so allow them
+		if len(c.ExtKeyUsage) == 0 {
+			return nil
+		}
 		return x509.CertificateInvalidError{
 			Cert:   c,
 			Reason: x509.IncompatibleUsage,

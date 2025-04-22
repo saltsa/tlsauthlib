@@ -36,6 +36,7 @@ func (l *multiloghandler) Handle(ctx context.Context, record slog.Record) error 
 	}
 	return errors.Join(errs...)
 }
+
 func (l *multiloghandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	handlers := make([]slog.Handler, 0, len(l.handlers))
 	for i := range l.handlers {
@@ -43,6 +44,7 @@ func (l *multiloghandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	}
 	return newMultilogHandler(handlers...)
 }
+
 func (l *multiloghandler) WithGroup(name string) slog.Handler {
 	handlers := make([]slog.Handler, 0, len(l.handlers))
 	for i := range l.handlers {

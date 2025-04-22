@@ -14,14 +14,11 @@ func KeytoString(key crypto.PrivateKey) string {
 	if err != nil {
 		log.Fatalf("failure to marshal pk: %s", err)
 	}
-
 	p := pem.Block{
 		Type:  "PRIVATE KEY",
 		Bytes: pkcs,
 	}
-
 	ret := string(pem.EncodeToMemory(&p))
-
 	return ret
 }
 
