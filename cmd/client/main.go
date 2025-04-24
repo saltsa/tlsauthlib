@@ -20,10 +20,14 @@ func main() {
 
 	cfg := util.InitConfig()
 
+	// For testing we want to skip normal cert validation
+	tcc := tlsauthlib.GetClientTLSConfig(cfg)
+	tcc.InsecureSkipVerify = true
+
 	httpClient = &http.Client{
 		Timeout: 30 * time.Second,
 		Transport: &http.Transport{
-			TLSClientConfig:   tlsauthlib.GetClientTLSConfig(cfg),
+			TLSClientConfig:   tcc,
 			ForceAttemptHTTP2: true,
 		},
 	}

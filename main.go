@@ -60,7 +60,6 @@ func GetServerTLSConfig(cfg *util.Config) *tls.Config {
 func GetClientTLSConfig(cfg *util.Config) *tls.Config {
 	return &tls.Config{
 		MinVersion:           tls.VersionTLS13,
-		InsecureSkipVerify:   true,
 		GetClientCertificate: cfg.GetClientCertificate,
 	}
 }
