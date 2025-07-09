@@ -11,7 +11,6 @@ import (
 	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/pem"
-	"errors"
 	"fmt"
 	"log"
 	"log/slog"
@@ -24,9 +23,11 @@ import (
 )
 
 var (
-	caCert       *x509.Certificate
-	srvCert      *x509.Certificate
-	clientCert   *x509.Certificate
+	caCert     *x509.Certificate
+	srvCert    *x509.Certificate
+	clientCert *x509.Certificate
+	caPool     *x509.CertPool
+
 	privKey      *ecdsa.PrivateKey
 	privKeyBytes []byte
 
@@ -34,8 +35,6 @@ var (
 )
 
 var tlsLock sync.Mutex
-
-const redisTimeout = 500 * time.Millisecond
 
 func CertInit() {
 	tlsLock.Lock()
@@ -47,54 +46,10 @@ func CertInit() {
 	genClientCert()
 }
 
-func SetRedisStorage(rcli *redis.Client) {
-	tlsLock.Lock()
-	defer tlsLock.Unlock()
-
-	redisClient = rcli
-}
-
-func getRedis(key string) []byte {
-	if redisClient == nil {
-		return nil
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), redisTimeout)
-	defer cancel()
-	bb, err := redisClient.Get(ctx, key).Bytes()
-	if err != nil {
-		if !errors.Is(err, redis.Nil) {
-			slog.Error("redis read failure", "error", err)
-		}
-		return nil
-	}
-	return bb
-}
-
-func setRedis(key string, b []byte) {
-	if redisClient == nil {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), redisTimeout)
-	defer cancel()
-
-	err := redisClient.Set(ctx, key, b, 0).Err()
-	if err != nil {
-		slog.Error("redis write failure", "error", err)
-		return
-	}
-	slog.Info("redis set ok", "key", key)
-}
-
 func genClientCert() {
 	var err error
 	name := "cert-client"
-
-	bb := getRedis(name)
-	if bb == nil {
-		bb = genCert(name, nil, "client")
-		setRedis(name, bb)
-	}
-
+	bb := genCert(name, nil, typeClientCertificate)
 	clientCert, err = x509.ParseCertificate(bb)
 	if err != nil {
 		slog.Error("failure to parse ca cert", "error", err)
@@ -106,12 +61,7 @@ func genServerCert() {
 	var err error
 	name := "cert-server"
 
-	bb := getRedis(name)
-	if bb == nil {
-		bb = genCert(name, caCert, "server")
-		setRedis(name, bb)
-	}
-
+	bb := genCert(name, caCert, typeServerCertificate)
 	srvCert, err = x509.ParseCertificate(bb)
 	if err != nil {
 		slog.Error("failure to parse ca cert", "error", err)
@@ -123,12 +73,7 @@ func genCA() {
 	var err error
 	name := "cert-ca"
 
-	bb := getRedis(name)
-	if bb == nil {
-		bb = genCert(name, nil, "ca")
-		setRedis(name, bb)
-	}
-
+	bb := genCert(name, nil, typeCACertificate)
 	caCert, err = x509.ParseCertificate(bb)
 	if err != nil {
 		slog.Error("failure to parse ca cert", "error", err)
@@ -196,22 +141,16 @@ func PrintCert(ctx context.Context, x *x509.Certificate) {
 
 func genPrivKey() {
 	var pkBytes []byte
-	name := "cert-privkey"
 
-	pkBytes = getRedis(name)
-	if pkBytes == nil {
-		slog.Info("generating new private key")
-		newPrivKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-		if err != nil {
-			log.Fatalln(err)
-		}
+	slog.Info("generating new private key")
+	newPrivKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		log.Fatalln(err)
+	}
 
-		pkBytes, err = x509.MarshalPKCS8PrivateKey(newPrivKey)
-		if err != nil {
-			log.Fatalln(err)
-		}
-
-		setRedis(name, pkBytes)
+	pkBytes, err = x509.MarshalPKCS8PrivateKey(newPrivKey)
+	if err != nil {
+		log.Fatalln(err)
 	}
 
 	privKeyBytes = pkBytes
@@ -291,6 +230,6 @@ func genCert(name string, parent *x509.Certificate, certType certificateType) []
 		log.Fatalf("Failed to create certificate: %v", err)
 	}
 
-	slog.Debug(fmt.Sprintf("certificate %s created", name), "expiresIn", notAfter.Sub(time.Now()))
+	slog.Debug(fmt.Sprintf("certificate %s created", name), "expiresIn", time.Until(notAfter))
 	return derBytes
 }

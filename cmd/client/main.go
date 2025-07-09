@@ -18,7 +18,7 @@ const maxErrorCount = 3
 func main() {
 	util.LogInit()
 
-	cfg := util.InitConfig()
+	cfg := tlsauthlib.NewConfig()
 
 	// For testing we want to skip normal cert validation
 	tcc := tlsauthlib.GetClientTLSConfig(cfg)

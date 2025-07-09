@@ -14,7 +14,7 @@ import (
 func main() {
 	// inits
 	util.LogInit()
-	cfg := util.InitConfig()
+	cfg := tlsauthlib.NewConfig()
 
 	// example http handler
 	http.HandleFunc("/", httpHandler)

@@ -1,4 +1,4 @@
-package util
+package tlsauthlib
 
 import (
 	"crypto/tls"
@@ -68,13 +68,11 @@ func (c *Config) readFromFile() {
 	slog.Info("config read done", "allowedCertCount", len(c.AllowedCerts), "certificateInstalled", c.HasCertificate())
 }
 
-func InitConfig() *Config {
+func NewConfig() *Config {
 	log.Printf("config loading...")
 
 	vi := viper.NewWithOptions()
 	vi.AutomaticEnv()
-
-	// viper.WithLogger(slog.Default())
 
 	newConfig := &Config{
 		vi:              vi,

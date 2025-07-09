@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/saltsa/tlsauthlib/internal/certs"
-	"github.com/saltsa/tlsauthlib/util"
 )
 
 type contextKey struct {
@@ -25,7 +24,7 @@ var SerialContextKey = &contextKey{"tls-client-serial"}
 
 const tlsHandshakeTimeout = 5 * time.Second
 
-func GetServerTLSConfig(cfg *util.Config) *tls.Config {
+func GetServerTLSConfig(cfg *Config) *tls.Config {
 	tlsConfig := &tls.Config{
 		GetCertificate: cfg.GetServerCertificate,
 		MinVersion:     tls.VersionTLS13,
@@ -57,7 +56,7 @@ func GetServerTLSConfig(cfg *util.Config) *tls.Config {
 	return tlsConfig
 }
 
-func GetClientTLSConfig(cfg *util.Config) *tls.Config {
+func GetClientTLSConfig(cfg *Config) *tls.Config {
 	return &tls.Config{
 		MinVersion:           tls.VersionTLS13,
 		GetClientCertificate: cfg.GetClientCertificate,
