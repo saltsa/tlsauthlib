@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
@@ -14,8 +15,8 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
-	"math/big"
 	"net"
+	"net/url"
 	"sync"
 	"time"
 
@@ -36,20 +37,32 @@ var (
 
 var tlsLock sync.Mutex
 
-func CertInit() {
+type CertConfig struct {
+	TrustDomain   string
+	CACertificate *x509.Certificate
+}
+
+func CertInit(cfg *CertConfig) {
 	tlsLock.Lock()
 	defer tlsLock.Unlock()
 
+	start := time.Now()
+	log.Println("Creating new certificates...")
 	genPrivKey()
-	genCA()
-	genServerCert()
-	genClientCert()
+	genCA(cfg)
+	cfg.CACertificate = caCert
+
+	genServerCert(cfg)
+	genClientCert(cfg)
+
+	log.Printf("all certificates and keys created in %s", time.Since(start))
 }
 
-func genClientCert() {
+func genClientCert(cfg *CertConfig) {
 	var err error
 	name := "cert-client"
-	bb := genCert(name, nil, typeClientCertificate)
+
+	bb := genCert(name, typeClientCertificate, cfg)
 	clientCert, err = x509.ParseCertificate(bb)
 	if err != nil {
 		slog.Error("failure to parse ca cert", "error", err)
@@ -57,23 +70,24 @@ func genClientCert() {
 	}
 }
 
-func genServerCert() {
+func genServerCert(cfg *CertConfig) {
 	var err error
 	name := "cert-server"
 
-	bb := genCert(name, caCert, typeServerCertificate)
+	bb := genCert(name, typeServerCertificate, cfg)
 	srvCert, err = x509.ParseCertificate(bb)
 	if err != nil {
 		slog.Error("failure to parse ca cert", "error", err)
 		return
 	}
+
 }
 
-func genCA() {
+func genCA(cfg *CertConfig) {
 	var err error
 	name := "cert-ca"
 
-	bb := genCert(name, nil, typeCACertificate)
+	bb := genCert(name, typeCACertificate, cfg)
 	caCert, err = x509.ParseCertificate(bb)
 	if err != nil {
 		slog.Error("failure to parse ca cert", "error", err)
@@ -81,10 +95,15 @@ func genCA() {
 	}
 }
 
+// Get new certificate
 func GetCertificate() (*tls.Certificate, error) {
 	cert, key := DERToPEM(srvCert.Raw, privKeyBytes)
 	ret, err := tls.X509KeyPair(cert, key)
 	return &ret, err
+}
+
+func GetCACertificate() *x509.Certificate {
+	return caCert
 }
 
 func DERToPEM(derCert, derKey []byte) (pemCert, pemKey []byte) {
@@ -106,23 +125,29 @@ func X509ClientCert() *x509.Certificate {
 	return clientCert
 }
 
-func GetPool() *x509.CertPool {
+func GetPool(cfg *CertConfig) *x509.CertPool {
 	tlsLock.Lock()
 	defer tlsLock.Unlock()
 
-	p := x509.NewCertPool()
-	p.AddCert(caCert)
-	return p
+	log.Printf("GetPool called")
+	if caPool == nil {
+		log.Printf("building the pool, adding %d as root ca...", cfg.CACertificate.SerialNumber)
+		caPool = x509.NewCertPool()
+		caPool.AddCert(cfg.CACertificate)
+		PrintCert(context.Background(), cfg.CACertificate)
+	}
+
+	return caPool
 }
 
-func GetClientPool() *x509.CertPool {
-	tlsLock.Lock()
-	defer tlsLock.Unlock()
+// func GetClientPool() *x509.CertPool {
+// 	tlsLock.Lock()
+// 	defer tlsLock.Unlock()
 
-	p := x509.NewCertPool()
-	p.AddCert(clientCert)
-	return p
-}
+// 	p := x509.NewCertPool()
+// 	p.AddCert(clientCert)
+// 	return p
+// }
 
 func CertHash(x *x509.Certificate) string {
 	hash := sha256.New()
@@ -135,7 +160,25 @@ func PrintCert(ctx context.Context, x *x509.Certificate) {
 	// sumBase64 := base64.RawURLEncoding.EncodeToString(sum)
 	// sumHex := hex.EncodeToString(sum)
 
-	slog.InfoContext(ctx, "Printing certificate info", "subject", x.Subject, "issuer", x.Issuer, "isCA", x.IsCA, "expiresIn", time.Until(x.NotAfter), "serial", x.SerialNumber, "hexSum", sumHex)
+	h := sha1.New()
+	h.Write(x.RawSubjectPublicKeyInfo)
+	skid := h.Sum(nil)
+
+	h.Reset()
+	h.Write(x.RawIssuer)
+	akid2 := h.Sum(nil)
+
+	slog.InfoContext(ctx, "certificate info",
+		"subject", x.Subject,
+		"issuer", x.Issuer,
+		"isCA", x.IsCA,
+		"expires", x.NotAfter.Format(time.DateTime),
+		"serial", x.SerialNumber,
+		"sha256sum", sumHex,
+		"akid", hex.EncodeToString(x.AuthorityKeyId),
+		"akid2", hex.EncodeToString(akid2),
+		"skid", hex.EncodeToString(skid),
+	)
 	// slog.InfoContext(ctx, "certificate", "subject", x.Subject, "issuer", x.Issuer, "serial", x.SerialNumber, "hexSum", sumHex)
 }
 
@@ -173,22 +216,30 @@ const (
 	typeCACertificate     certificateType = "ca"
 )
 
-func genCert(name string, parent *x509.Certificate, certType certificateType) []byte {
+func genCert(name string, certType certificateType, cfg *CertConfig) []byte {
 	var err error
 
-	slog.Info("generating new cert", "name", name, "type", certType)
+	slog.Info("generating new cert", "name", name, "type", certType, "trustDomain", cfg.TrustDomain)
 
-	serialNumberLimit := new(big.Int).Lsh(big.NewInt(1), 128)
-	serialNumber, err := rand.Int(rand.Reader, serialNumberLimit)
-	if err != nil {
-		log.Fatalf("Failed to generate serial number: %v", err)
-	}
+	parent := cfg.CACertificate
+
+	// serialNumberLimit := new(big.Int).Lsh(big.NewInt(1), 128)
+	// serialNumber, err := rand.Int(rand.Reader, serialNumberLimit)
+	// if err != nil {
+	// 	log.Fatalf("Failed to generate serial number: %v", err)
+	// }
 
 	notBefore := time.Now()
+	// notAfter := notBefore.Add(10 * 365 * 24 * time.Hour)
 	notAfter := notBefore.Add(10 * 365 * 24 * time.Hour)
 	keyUsage := x509.KeyUsageDigitalSignature
 
-	eku := []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth}
+	var eku []x509.ExtKeyUsage
+	if certType == typeCACertificate {
+		eku = []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}
+	} else {
+		eku = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth}
+	}
 	// switch certType {
 	// case typeServerCertificate:
 	// 	eku = append(eku, x509.ExtKeyUsageServerAuth)
@@ -196,8 +247,15 @@ func genCert(name string, parent *x509.Certificate, certType certificateType) []
 	// 	eku = append(eku, x509.ExtKeyUsageClientAuth)
 	// default:
 	// }
+
+	td, err := url.Parse(cfg.TrustDomain)
+	if err != nil {
+		log.Fatalf("failure to parse %s: %s", cfg.TrustDomain, err)
+	}
+
+	log.Printf("parsed trustdomain: %s", td.String())
 	template := x509.Certificate{
-		SerialNumber: serialNumber,
+		// SerialNumber: serialNumber,
 		Subject: pkix.Name{
 			CommonName: name,
 		},
@@ -209,6 +267,7 @@ func genCert(name string, parent *x509.Certificate, certType certificateType) []
 		BasicConstraintsValid: true,
 		DNSNames:              []string{"localhost"},
 		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1")},
+		URIs:                  []*url.URL{td},
 	}
 
 	if certType == typeCACertificate {

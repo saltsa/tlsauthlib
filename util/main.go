@@ -38,14 +38,10 @@ func KillMySelf() {
 }
 
 func LogInit() {
-	// fd, err := os.OpenFile("/tmp/tlsauth.log", os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
-	// if err != nil {
-	// 	log.Fatalf("log file open failure: %s", err)
-	// }
 	h := newMultilogHandler(
 		slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 			Level:     slog.LevelDebug,
-			AddSource: true,
+			AddSource: false,
 		}),
 	// slog.NewJSONHandler(fd, &slog.HandlerOptions{
 	// 	Level: slog.LevelDebug,

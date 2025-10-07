@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"log"
 	"log/slog"
 	"net"
 	"slices"
@@ -14,43 +15,47 @@ import (
 	"github.com/saltsa/tlsauthlib/internal/certs"
 )
 
-type contextKey struct {
-	name string
-}
+type contextKey string
 
-func (k *contextKey) String() string { return "tlsauthlib context value " + k.name }
-
-var SerialContextKey = &contextKey{"tls-client-serial"}
+const SerialContextKey = contextKey("tls-client-serial")
 
 const tlsHandshakeTimeout = 5 * time.Second
 
 func GetServerTLSConfig(cfg *Config) *tls.Config {
+
+	clientRoots := certs.GetPool(&certs.CertConfig{CACertificate: cfg.caCertificate})
 	tlsConfig := &tls.Config{
 		GetCertificate: cfg.GetServerCertificate,
 		MinVersion:     tls.VersionTLS13,
-		ClientAuth:     tls.RequireAnyClientCert,
+		ClientAuth:     tls.RequireAndVerifyClientCert,
+		ClientCAs:      clientRoots,
+	}
 
-		VerifyConnection: func(cs tls.ConnectionState) error {
+	// If ClientAuth is changed to something more relaxed, use our own verify
+	// function which doesn't check CA.
+	if tlsConfig.ClientAuth != tls.RequireAndVerifyClientCert {
+		connectionVerify := func(cs tls.ConnectionState) error {
+			log.Printf("verify connection")
 			allowedCerts := cfg.GetAllowedCerts()
 			if len(cs.PeerCertificates) == 0 {
 				return errors.New("no peer certificate available")
 			}
-
 			xCert := cs.PeerCertificates[0]
 			receivedCertHash := certs.CertHash(xCert)
-
 			// If this is the first certificate we see, add it to config
 			if len(allowedCerts) == 0 {
 				cfg.ConfigAddCert(receivedCertHash)
 			}
-
 			valid := slices.Contains(allowedCerts, receivedCertHash)
 			if !valid {
-				slog.Debug("cert not allowed", "allowedCertCount", len(allowedCerts))
+				slog.Info("cert not allowed", "allowedCertCount", len(allowedCerts))
 				return fmt.Errorf("cert '%s' not found from allowed certs", receivedCertHash)
 			}
 			return validateClientCertificate(xCert)
-		},
+		}
+
+		tlsConfig.VerifyConnection = connectionVerify
+		tlsConfig.ClientCAs = nil
 	}
 
 	return tlsConfig

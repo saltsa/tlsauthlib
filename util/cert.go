@@ -53,3 +53,7 @@ func X509ToTLS(cert *x509.Certificate) *tls.Certificate {
 		Leaf:        cert,
 	}
 }
+
+// func CertInfo(cert *x509.Certificate) {
+// 	log.Printf("Subject: %s, issued by %s, SKID=%x AKID=%x CA=%t", cert.Subject, cert.Issuer, cert.SubjectKeyId, cert.AuthorityKeyId, cert.IsCA)
+// }

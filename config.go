@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/saltsa/tlsauthlib/internal/certs"
-
+	"github.com/saltsa/tlsauthlib/util"
 	"github.com/spf13/viper"
 )
 
@@ -22,6 +22,7 @@ const (
 	allowedCerts           = "allowed_certs"
 	privateKey             = "private_key"
 	certificate            = "certificate"
+	caCertificate          = "caCertificate"
 	configFileName         = "config.yaml"
 	defaultApplicationName = "tlsauthlib"
 )
@@ -31,44 +32,22 @@ type Config struct {
 	vi              *viper.Viper
 	Port            string
 	AllowedCerts    []string `mapstructure:"allowed_certs"`
-	certificate     *tls.Certificate
 	ApplicationName string
+	TrustDomain     string
 
+	certificate       *tls.Certificate
+	caCertificate     *x509.Certificate
 	changesPending    bool
 	dynamicConfigPath string
 }
 
-func (c *Config) readFromFile() {
-	c.Lock()
-	defer c.Unlock()
-	slog.Debug("reading config...", "allowedCertCount", len(c.AllowedCerts), "path", c.dynamicConfigPath)
-
-	c.vi.SetConfigType("yaml")
-	c.vi.SetConfigFile(c.dynamicConfigPath)
-	c.vi.ReadInConfig()
-
-	err := c.vi.ReadInConfig()
-	if err != nil {
-		slog.Error("Config read failure", "error", err)
-	}
-
-	cert := c.vi.GetString(certificate)
-	privateKey := c.vi.GetString(privateKey)
-	if len(cert) > 0 && len(privateKey) > 0 {
-		tlsCert, err := tls.X509KeyPair([]byte(cert), []byte(privateKey))
-		if err != nil {
-			log.Fatalf("failed to read cert: %s", err)
-		}
-		c.certificate = &tlsCert
-		log.Printf("certificate expires in %s", c.certificate.Leaf.NotAfter.Format(time.DateOnly))
-	} else {
-		slog.Error("no tls certificate found from config", "error", err)
-	}
-
-	slog.Info("config read done", "allowedCertCount", len(c.AllowedCerts), "certificateInstalled", c.HasCertificate())
+type options struct {
+}
+type ConfigOption interface {
+	apply(c *options)
 }
 
-func NewConfig() *Config {
+func NewConfig(opts ...ConfigOption) *Config {
 	log.Printf("config loading...")
 
 	vi := viper.NewWithOptions()
@@ -79,23 +58,23 @@ func NewConfig() *Config {
 		ApplicationName: defaultApplicationName,
 	}
 	vi.SetDefault("port", "8443")
+	vi.SetDefault("trustDomain", "example.com")
 
 	newConfig.setDynamicConfigPath()
 	newConfig.readFromFile()
 	newConfig.populateConfig()
 
 	if !newConfig.HasCertificate() {
-		certs.CertInit()
-		cert, err := certs.GetCertificate()
-		if err != nil {
-			log.Fatalf("failure to get client cert: %s", err)
-		}
+		certs.CertInit(&certs.CertConfig{
+			TrustDomain: newConfig.TrustDomain,
+		})
 
-		newConfig.certificate = cert
+		newConfig.certificate, _ = certs.GetCertificate()
+		newConfig.caCertificate = certs.GetCACertificate()
 		newConfig.changesPending = true
 	}
 
-	newConfig.Commit()
+	newConfig.writeConfigToFile()
 
 	return newConfig
 }
@@ -126,7 +105,15 @@ func (c *Config) ConfigAddCert(cert string) {
 	c.AllowedCerts = append(c.AllowedCerts, cert)
 	c.changesPending = true
 
-	go c.Commit()
+	go c.writeConfigToFile()
+}
+
+func (c *Config) SetTrustDomain(td string) {
+	c.Lock()
+	defer c.Unlock()
+	c.TrustDomain = td
+	c.changesPending = true
+	go c.writeConfigToFile()
 }
 
 func (c *Config) GetAllowedCerts() []string {
@@ -135,7 +122,7 @@ func (c *Config) GetAllowedCerts() []string {
 	return c.AllowedCerts
 }
 
-func (c *Config) Commit() error {
+func (c *Config) writeConfigToFile() error {
 	c.Lock()
 	defer c.Unlock()
 
@@ -157,6 +144,9 @@ func (c *Config) Commit() error {
 	cert, key := certs.DERToPEM(c.certificate.Leaf.Raw, keyDERBytes)
 	c.vi.Set(certificate, string(cert))
 	c.vi.Set(privateKey, string(key))
+
+	caCert, _ := certs.DERToPEM(c.caCertificate.Raw, keyDERBytes)
+	c.vi.Set(caCertificate, string(caCert))
 
 	err = c.vi.WriteConfigAs(c.dynamicConfigPath)
 	if err != nil {
@@ -202,10 +192,43 @@ func (c *Config) setDynamicConfigPath() {
 
 	slog.Debug("directories from environment", "cache", cacheDir, "config", configDir, "home", homeDir)
 	dynamicConfigDir := filepath.Join(cacheDir, c.ApplicationName)
+
 	err = os.MkdirAll(dynamicConfigDir, 0700)
 	if err != nil {
 		log.Fatalln(err)
 	}
 
 	c.dynamicConfigPath = filepath.Join(dynamicConfigDir, configFileName)
+}
+
+func (c *Config) readFromFile() {
+	c.Lock()
+	defer c.Unlock()
+	slog.Debug("reading config...", "allowedCertCount", len(c.AllowedCerts), "path", c.dynamicConfigPath)
+
+	c.vi.SetConfigType("yaml")
+	c.vi.SetConfigFile(c.dynamicConfigPath)
+	c.vi.ReadInConfig()
+
+	err := c.vi.ReadInConfig()
+	if err != nil {
+		slog.Error("Config read failure", "error", err)
+	}
+
+	cert, err1 := util.StringToCert(c.vi.GetString(certificate))
+	caCert, err2 := util.StringToCert(c.vi.GetString(caCertificate))
+	privateKey, err3 := util.StringToKey(c.vi.GetString(privateKey))
+
+	errGrp := errors.Join(err1, err2, err3)
+	if errGrp == nil {
+		slog.Info("Certificate, CA certificate and key read from file")
+		c.caCertificate = caCert
+		c.certificate = util.X509ToTLS(cert)
+		c.certificate.PrivateKey = privateKey
+		log.Printf("certificate expires in %s", c.certificate.Leaf.NotAfter.Format(time.DateOnly))
+	} else {
+		slog.Error("no tls certificate found from config", "error", err)
+	}
+
+	slog.Info("config read done", "allowedCertCount", len(c.AllowedCerts), "certificateInstalled", c.HasCertificate())
 }
