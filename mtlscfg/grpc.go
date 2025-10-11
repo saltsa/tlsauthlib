@@ -6,8 +6,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
-	"log"
-	"strings"
 	"sync/atomic"
 	"time"
 
@@ -39,34 +37,45 @@ type MTLSConfigurator struct {
 
 	coordinationServer string
 	certType           certhelper.CertificateType
-	peerIdentity       string
+
+	localIdentity  string
+	remoteIdentity string
 
 	privateKey crypto.Signer
 
 	cpReady       chan bool
 	certAvailable chan bool
 
-	csr []byte // this won't change
-
 	certClient pb.CertProviderClient
 }
 
-func NewClientConfig(ctx context.Context, certServer string, peerIdentity string) (*MTLSConfigurator, error) {
-	return newMtlsClient(ctx, certServer, certhelper.TypeClientCertificate, peerIdentity)
+func NewClientConfig(ctx context.Context, certServer string, options ...Option) (*MTLSConfigurator, error) {
+	return newMtlsClient(ctx, certServer, certhelper.TypeClientCertificate, options...)
 }
 
-func NewServerConfig(ctx context.Context, certServer string, peerIdentity string) (*MTLSConfigurator, error) {
-	return newMtlsClient(ctx, certServer, certhelper.TypeServerCertificate, peerIdentity)
+func NewServerConfig(ctx context.Context, certServer string, options ...Option) (*MTLSConfigurator, error) {
+	return newMtlsClient(ctx, certServer, certhelper.TypeServerCertificate, options...)
 }
 
-func newMtlsClient(ctx context.Context, srv string, certType certhelper.CertificateType, peerIdentity string) (*MTLSConfigurator, error) {
+func Must(mc *MTLSConfigurator, err error) *MTLSConfigurator {
+	if err != nil {
+		panic(err)
+	}
+	return mc
+}
+
+func newMtlsClient(ctx context.Context, srv string, ct certhelper.CertificateType, options ...Option) (*MTLSConfigurator, error) {
 	ret := &MTLSConfigurator{
 		cpReady:            make(chan bool, 1),
 		certAvailable:      make(chan bool, 1),
 		coordinationServer: srv,
-		certType:           certType,
-		peerIdentity:       peerIdentity,
+		certType:           ct,
 	}
+
+	for _, o := range options {
+		o(ret)
+	}
+
 	err := ret.grpcClient(ctx)
 	if err != nil {
 		return nil, err
@@ -80,14 +89,14 @@ func (mc *MTLSConfigurator) GetTLSConfig() *tls.Config {
 		// common
 		MinVersion: tls.VersionTLS13,
 		VerifyConnection: func(cs tls.ConnectionState) error {
-			return verifyPeerIdentity(cs.PeerCertificates, mc.coordinationServer, mc.peerIdentity)
+			return verifyCertificateIdentity(cs.PeerCertificates, mc.coordinationServer, mc.remoteIdentity)
 		},
 
 		// used only by servers
 		ClientAuth: tls.RequireAndVerifyClientCert,
 		ClientCAs:  pool,
 		GetConfigForClient: func(chi *tls.ClientHelloInfo) (*tls.Config, error) {
-			log.Printf("TODO: Not implemented yet. GetConfigForClient servername: %s", chi.ServerName)
+			zap.S().Debugf("GetConfigForClient for servername %s, not implemented. Returning nil (no error)", chi.ServerName)
 			return nil, nil
 		},
 		GetCertificate: func(chi *tls.ClientHelloInfo) (*tls.Certificate, error) {
@@ -95,12 +104,11 @@ func (mc *MTLSConfigurator) GetTLSConfig() *tls.Config {
 				return p, nil
 			}
 			return nil, errors.New("no server certificate available")
-
 		},
 
 		// used only by clients
 		RootCAs:    pool,
-		ServerName: "localhost",
+		ServerName: "localhost", // localhost is added to certs by default and we use it, so cert validation will succeed
 		GetClientCertificate: func(cri *tls.CertificateRequestInfo) (*tls.Certificate, error) {
 			if p := mc.tlsCert.Load(); p != nil {
 				return p, nil
@@ -149,7 +157,7 @@ func (mc *MTLSConfigurator) grpcClient(ctx context.Context) error {
 	return nil
 }
 
-func (mc *MTLSConfigurator) updateClientCert(data [][]byte) {
+func (mc *MTLSConfigurator) updateCertificate(data [][]byte) {
 	log := zap.S()
 
 	if len(data) == 0 {
@@ -159,7 +167,13 @@ func (mc *MTLSConfigurator) updateClientCert(data [][]byte) {
 
 	c, err := x509.ParseCertificate(data[0])
 	if err != nil {
-		log.Error("failure to parse cert", "err", err)
+		log.Errorf("failure to parse cert: %s", err)
+		return
+	}
+
+	err = verifyCertificateIdentity([]*x509.Certificate{c}, mc.coordinationServer, mc.localIdentity)
+	if err != nil {
+		log.Errorf("failed to get verify certificate role: %s", err)
 		return
 	}
 
@@ -176,43 +190,6 @@ func (mc *MTLSConfigurator) updateClientCert(data [][]byte) {
 	mc.tlsCert.Store(newCert)
 }
 
-func verifyPeerIdentity(pcs []*x509.Certificate, coordinationServer string, expectedIdentity string) error {
-	role, err := getRoleFromCert(pcs, coordinationServer)
-	if err != nil {
-		return err
-	}
-	if role != expectedIdentity {
-		return errors.New("remote identity does not match expected")
-	}
-	return nil
-}
-
-func getRoleFromCert(pcs []*x509.Certificate, coordinationServer string) (string, error) {
-	if len(pcs) == 0 {
-		return "", ErrNoTLSCert
-	}
-	pc := pcs[0]
-
-	if len(pc.URIs) != 1 {
-		return "", ErrInvalidNumberOfURIs
-	}
-	roleURI := pc.URIs[0]
-
-	if roleURI.Scheme != "spiffe" {
-		return "", ErrInvalidURIScheme
-	}
-
-	if roleURI.Host != coordinationServer {
-		return "", ErrInvalidHost
-	}
-
-	if len(roleURI.Path) == 0 {
-		return "", ErrInvalidPath
-	}
-
-	return strings.TrimPrefix(roleURI.Path, "/"), nil
-}
-
 func (mc *MTLSConfigurator) certificateUpdater(ctx context.Context, csr []byte) {
 	log := zap.S()
 	t := time.NewTicker(reconnectInterval)
@@ -227,14 +204,13 @@ func (mc *MTLSConfigurator) certificateUpdater(ctx context.Context, csr []byte) 
 			Type: string(mc.certType),
 		}
 
-		log.Debug("calling FetchCertificate")
 		fcResp, err := mc.certClient.FetchCertificate(ctx, signCertificateRequest)
 		if err != nil {
 			log.Error("failed to open fetch certificate stream", "err", err)
 			<-t.C
 			continue
 		}
-		log.Debug("ready to receive certificates")
+		log.Debug("receiving certificates")
 		for {
 			resp, err := fcResp.Recv()
 			if err != nil {
@@ -245,12 +221,13 @@ func (mc *MTLSConfigurator) certificateUpdater(ctx context.Context, csr []byte) 
 				<-t.C
 				break
 			}
-			mc.updateClientCert(resp.GetCertificate())
+			mc.updateCertificate(resp.GetCertificate())
 
 			select {
 			case <-ctx.Done():
 				return
 			case mc.certAvailable <- true:
+				log.Info("certificate is now available for use")
 			default:
 			}
 		}
