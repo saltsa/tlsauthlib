@@ -89,7 +89,9 @@ func (mc *MTLSConfigurator) GetTLSConfig() *tls.Config {
 		// common
 		MinVersion: tls.VersionTLS13,
 		VerifyConnection: func(cs tls.ConnectionState) error {
-			return verifyCertificateIdentity(cs.PeerCertificates, mc.coordinationServer, mc.remoteIdentity)
+			verifyResult := verifyCertificateIdentity(cs.PeerCertificates, mc.coordinationServer, mc.remoteIdentity)
+			zap.S().Debugf("VerifyConnection() conn verify returned: %v", verifyResult)
+			return verifyResult
 		},
 
 		// used only by servers
@@ -200,8 +202,9 @@ func (mc *MTLSConfigurator) certificateUpdater(ctx context.Context, csr []byte) 
 		}
 
 		signCertificateRequest := &pb.SignCertificate{
-			Csr:  csr,
-			Type: string(mc.certType),
+			Csr:      csr,
+			Type:     string(mc.certType),
+			Identity: mc.localIdentity,
 		}
 
 		fcResp, err := mc.certClient.FetchCertificate(ctx, signCertificateRequest)
